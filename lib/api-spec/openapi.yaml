@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: scanner
+    description: Arbitrage discovery and market intelligence
 paths:
   /healthz:
     get:
@@ -24,6 +26,107 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /scanner/summary:
+    get:
+      operationId: getScannerSummary
+      tags: [scanner]
+      summary: Get scanner summary
+      responses:
+        "200":
+          description: Scanner summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScannerSummary"
+  /scanner/networks:
+    get:
+      operationId: getScannerNetworks
+      tags: [scanner]
+      summary: Get network health and scan coverage
+      responses:
+        "200":
+          description: Supported network health
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NetworkStatus"
+  /scanner/tokens:
+    get:
+      operationId: getScannerTokens
+      tags: [scanner]
+      summary: Get the tracked token universe
+      responses:
+        "200":
+          description: Tracked tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScannerToken"
+  /scanner/opportunities:
+    get:
+      operationId: getScannerOpportunities
+      tags: [scanner]
+      summary: Scan supported chains and DEX pools for price dislocations
+      parameters:
+        - name: chain
+          in: query
+          schema:
+            type: string
+            enum: [all, ethereum, arbitrum]
+            default: all
+        - name: token
+          in: query
+          schema:
+            type: string
+        - name: minProfitBps
+          in: query
+          schema:
+            type: number
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: number
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Ranked arbitrage opportunities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ArbitrageOpportunity"
+  /scanner/opportunities/{id}:
+    get:
+      operationId: getScannerOpportunity
+      tags: [scanner]
+      summary: Get opportunity route and profit estimate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Opportunity detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArbitrageOpportunity"
+        "404":
+          description: Opportunity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +136,143 @@ components:
           type: string
       required:
         - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    ScannerSummary:
+      type: object
+      properties:
+        activeOpportunities:
+          type: number
+        poolsScanned:
+          type: number
+        tokensTracked:
+          type: number
+        estimatedNetProfit24h:
+          type: number
+        lastScanAt:
+          type: string
+        scanLatencyMs:
+          type: number
+      required: [activeOpportunities, poolsScanned, tokensTracked, estimatedNetProfit24h, lastScanAt, scanLatencyMs]
+    NetworkStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        chainId:
+          type: number
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+        blockNumber:
+          type: number
+        gasGwei:
+          type: number
+        blockTimeMs:
+          type: number
+        pools:
+          type: number
+        lastBlockAt:
+          type: string
+      required: [id, name, chainId, status, blockNumber, gasGwei, blockTimeMs, pools, lastBlockAt]
+    ScannerToken:
+      type: object
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        decimals:
+          type: number
+        chains:
+          type: array
+          items:
+            type: string
+        liquidityUsd:
+          type: number
+        pools:
+          type: number
+        priceUsd:
+          type: number
+        change24h:
+          type: number
+      required: [symbol, name, address, decimals, chains, liquidityUsd, pools, priceUsd, change24h]
+    DEXVenue:
+      type: object
+      properties:
+        name:
+          type: string
+        chain:
+          type: string
+        priceUsd:
+          type: number
+        liquidityUsd:
+          type: number
+        feeBps:
+          type: number
+        pairAddress:
+          type: string
+        dexUrl:
+          type: string
+      required: [name, chain, priceUsd, liquidityUsd, feeBps, pairAddress, dexUrl]
+    ProfitEstimate:
+      type: object
+      properties:
+        grossProfitUsd:
+          type: number
+        flashLoanFeeUsd:
+          type: number
+        gasCostUsd:
+          type: number
+        dexFeesUsd:
+          type: number
+        slippageUsd:
+          type: number
+        netProfitUsd:
+          type: number
+        recommendedBorrowUsd:
+          type: number
+        confidence:
+          type: string
+          enum: [high, medium, low]
+      required: [grossProfitUsd, flashLoanFeeUsd, gasCostUsd, dexFeesUsd, slippageUsd, netProfitUsd, recommendedBorrowUsd, confidence]
+    ArbitrageOpportunity:
+      type: object
+      properties:
+        id:
+          type: string
+        token:
+          type: string
+        pair:
+          type: string
+        chain:
+          type: string
+        spreadBps:
+          type: number
+        spreadPct:
+          type: number
+        buyVenue:
+          $ref: "#/components/schemas/DEXVenue"
+        sellVenue:
+          $ref: "#/components/schemas/DEXVenue"
+        profit:
+          $ref: "#/components/schemas/ProfitEstimate"
+        detectedAt:
+          type: string
+        blockNumber:
+          type: number
+        executable:
+          type: boolean
+        status:
+          type: string
+          enum: [new, monitoring, stale]
+      required: [id, token, pair, chain, spreadBps, spreadPct, buyVenue, sellVenue, profit, detectedAt, blockNumber, executable, status]
 
