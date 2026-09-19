@@ -1,0 +1,1 @@
+- [DexScreener pool coverage](dexscreener-pool-coverage.md) — batch token reads return one best pair; full pool coverage requires token-pair reads for prioritized assets.
