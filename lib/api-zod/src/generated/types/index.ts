@@ -18,4 +18,5 @@ export * from './networkStatusStatus';
 export * from './profitEstimate';
 export * from './profitEstimateConfidence';
 export * from './scannerSummary';
+export * from './scannerSummaryTokenListSource';
 export * from './scannerToken';

@@ -16,4 +16,5 @@ export interface ScannerToken {
   pools: number;
   priceUsd: number;
   change24h: number;
+  volume24h: number;
 }

@@ -17,6 +17,26 @@ type TokenDefinition = {
   decimals: number;
   addresses: Partial<Record<ChainId, string>>;
 };
+type TokenListToken = {
+  chainId?: number;
+  address?: string;
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  extensions?: {
+    bridgeInfo?: Record<string, { tokenAddress?: string }>;
+  };
+};
+type TokenList = {
+  timestamp?: string;
+  tokens?: TokenListToken[];
+};
+type Universe = {
+  definitions: TokenDefinition[];
+  source: "uniswap" | "curated";
+  listUpdatedAt: string | null;
+  candidateCounts: Record<ChainId, number>;
+};
 type Venue = {
   name: string;
   chain: string;
@@ -51,10 +71,57 @@ type Opportunity = {
   executable: boolean;
   status: "new" | "monitoring" | "stale";
 };
+type DexPair = {
+  chainId?: string;
+  dexId?: string;
+  url?: string;
+  pairAddress?: string;
+  baseToken?: { address?: string };
+  quoteToken?: { address?: string };
+  priceUsd?: string;
+  priceNative?: string;
+  liquidity?: { usd?: number };
+  volume?: { h24?: number };
+  priceChange?: { h24?: number };
+  labels?: string[];
+};
+type Market = { token: TokenDefinition; pairs: DexPair[] };
+type MarketScan = {
+  markets: Market[];
+  requestedTokens: number;
+  failedTokens: number;
+  batches: number;
+  failedBatches: number;
+};
+type ChainScan = {
+  status: {
+    id: string;
+    name: string;
+    chainId: number;
+    status: "healthy";
+    blockNumber: number;
+    gasGwei: number;
+    blockTimeMs: number;
+    pools: number;
+    tokensScanned: number;
+    failedTokens: number;
+    liquidPools: number;
+    venues: number;
+    lastBlockAt: string;
+  };
+  markets: Market[];
+  opportunities: Opportunity[];
+};
+type ScanSnapshot = {
+  capturedAt: string;
+  latencyMs: number;
+  universe: Universe;
+  chains: ChainScan[];
+};
 
-const TOKEN_DEFINITIONS: TokenDefinition[] = [
+const CURATED_TOKEN_DEFINITIONS: TokenDefinition[] = [
   ["WETH", "Wrapped Ether", 18, "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"],
-  ["USDC", "USD Coin", 6, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"],
+  ["USDC", "USD Coin", 6, "0xA0b86991c6218b36b1c19D4a2e9Eb0cE3606eB48", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"],
   ["USDT", "Tether USD", 6, "0xdAC17F958D2ee523a2206206994597C13D831ec7", "0xFd086Bc7CD5C481dcc9C85ebe478A1C0b69FCbb9"],
   ["DAI", "Dai Stablecoin", 18, "0x6B175474E89094C44Da98b954EedeAC495271d0F", "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"],
   ["WBTC", "Wrapped Bitcoin", 8, "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f"],
@@ -90,9 +157,24 @@ const RPCS: Record<ChainId, { chainId: number; name: string; url: string; explor
   ethereum: { chainId: 1, name: "Ethereum", url: "https://ethereum-rpc.publicnode.com", explorer: "https://etherscan.io" },
   arbitrum: { chainId: 42161, name: "Arbitrum One", url: "https://arbitrum-one-rpc.publicnode.com", explorer: "https://arbiscan.io" },
 };
-
+const CHAINS: ChainId[] = ["ethereum", "arbitrum"];
+const TOKEN_LIST_URL = "https://tokens.uniswap.org";
+const MAX_TOKENS_PER_CHAIN = 150;
+const MAX_DETAILED_TOKENS_PER_CHAIN = 60;
+const DEX_BATCH_SIZE = 30;
+const MIN_LIQUIDITY_USD = 10_000;
 const cache = new Map<string, { expiresAt: number; value: unknown }>();
-const TTL_MS = 20_000;
+const MARKET_TTL_MS = 30_000;
+const TOKEN_LIST_TTL_MS = 15 * 60_000;
+const SNAPSHOT_TTL_MS = 25_000;
+const PRIORITY_SYMBOLS = new Set([
+  "WETH", "ETH", "USDC", "USDT", "DAI", "WBTC", "WBETH", "STETH", "WSTETH", "LINK",
+  "UNI", "AAVE", "ARB", "CRV", "MKR", "LDO", "OP", "GMX", "PENDLE", "SNX", "COMP",
+  "SUSHI", "1INCH", "LPT", "GRT", "MATIC", "RPL", "FRAX", "LUSD", "PYTH", "JUP",
+]);
+const STABLE_SYMBOLS = new Set(["USDC", "USDT", "DAI", "USDE", "FRAX", "LUSD", "USDS", "GHO", "CRVUSD"]);
+let snapshotCache: { expiresAt: number; value: ScanSnapshot } | undefined;
+let snapshotInFlight: Promise<ScanSnapshot> | undefined;
 
 async function jsonFetch<T>(url: string): Promise<T> {
   const response = await fetch(url, {
@@ -103,11 +185,11 @@ async function jsonFetch<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
+async function cached<T>(key: string, loader: () => Promise<T>, ttlMs = MARKET_TTL_MS): Promise<T> {
   const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.value as T;
   const value = await loader();
-  cache.set(key, { expiresAt: Date.now() + TTL_MS, value });
+  cache.set(key, { expiresAt: Date.now() + ttlMs, value });
   return value;
 }
 
@@ -152,52 +234,216 @@ async function networkStatus(chain: ChainId) {
     gasGwei: hexNumber(gasHex) / 1e9,
     blockTimeMs: Math.max(0, (currentTime - parentTime) * 1000),
     pools: 0,
+    tokensScanned: 0,
+    failedTokens: 0,
+    liquidPools: 0,
+    venues: 0,
     lastBlockAt: currentTime ? new Date(currentTime * 1000).toISOString() : new Date().toISOString(),
   };
 }
 
-type DexPair = {
-  dexId?: string;
-  url?: string;
-  pairAddress?: string;
-  baseToken?: { address?: string };
-  priceUsd?: string;
-  priceNative?: string;
-  liquidity?: { usd?: number };
-  volume?: { h24?: number };
-  priceChange?: { h24?: number };
-  labels?: string[];
-};
-
-function tokenPrice(pair: DexPair, address: string): number {
-  const baseAddress = pair.baseToken?.address?.toLowerCase();
-  const basePrice = Number(pair.priceUsd ?? 0);
-  if (baseAddress === address.toLowerCase()) return basePrice;
-  const nativeRatio = Number(pair.priceNative ?? 0);
-  return basePrice > 0 && nativeRatio > 0 ? basePrice / nativeRatio : 0;
+function tokenListScore(token: TokenListToken, chain: ChainId, curatedAddresses: Set<string>): number {
+  const symbol = (token.symbol ?? "").toUpperCase();
+  const address = token.address?.toLowerCase() ?? "";
+  const bridgeInfo = token.extensions?.bridgeInfo?.[String(RPCS[chain].chainId)];
+  return (curatedAddresses.has(address) ? 10_000 : 0)
+    + (PRIORITY_SYMBOLS.has(symbol) ? 2_000 : 0)
+    + (STABLE_SYMBOLS.has(symbol) ? 750 : 0)
+    + (bridgeInfo?.tokenAddress ? 300 : 0)
+    + (token.decimals === 18 || token.decimals === 6 ? 50 : 0);
 }
 
-async function pairsFor(chain: ChainId, address: string): Promise<DexPair[]> {
+function mergeDefinition(definitions: TokenDefinition[], candidate: TokenDefinition, chain: ChainId) {
+  const matching = definitions.find((definition) =>
+    definition.symbol.toLowerCase() === candidate.symbol.toLowerCase()
+      && !definition.addresses[chain],
+  );
+  if (matching) {
+    matching.addresses[chain] = candidate.addresses[chain];
+    return;
+  }
+  const sameAddress = definitions.find((definition) =>
+    definition.addresses[chain]?.toLowerCase() === candidate.addresses[chain]?.toLowerCase(),
+  );
+  if (!sameAddress) definitions.push(candidate);
+}
+
+async function loadTokenUniverse(): Promise<Universe> {
+  let list: TokenList | undefined;
+  try {
+    list = await cached("uniswap-token-list", () => jsonFetch<TokenList>(TOKEN_LIST_URL), TOKEN_LIST_TTL_MS);
+  } catch (err) {
+    logger.warn({ err }, "verified token list unavailable; using curated token metadata");
+  }
+
+  if (!list?.tokens?.length) {
+    const candidateCounts = {
+      ethereum: CURATED_TOKEN_DEFINITIONS.filter((token) => token.addresses.ethereum).length,
+      arbitrum: CURATED_TOKEN_DEFINITIONS.filter((token) => token.addresses.arbitrum).length,
+    };
+    return {
+      definitions: CURATED_TOKEN_DEFINITIONS.map((token) => ({ ...token, addresses: { ...token.addresses } })),
+      source: "curated",
+      listUpdatedAt: null,
+      candidateCounts,
+    };
+  }
+
+  const definitions = CURATED_TOKEN_DEFINITIONS.map((token) => ({ ...token, addresses: { ...token.addresses } }));
+  const candidateCounts = {} as Record<ChainId, number>;
+  for (const chain of CHAINS) {
+    const candidates = list.tokens
+      .filter((token) => token.chainId === RPCS[chain].chainId && token.address && token.symbol && token.name)
+      .filter((token) => /^0x[a-fA-F0-9]{40}$/.test(token.address!));
+    candidateCounts[chain] = candidates.length;
+    const curatedAddresses = new Set(
+      CURATED_TOKEN_DEFINITIONS
+        .map((token) => token.addresses[chain]?.toLowerCase())
+        .filter((address): address is string => Boolean(address)),
+    );
+    const chosen = candidates
+      .sort((a, b) =>
+        tokenListScore(b, chain, curatedAddresses) - tokenListScore(a, chain, curatedAddresses)
+          || (a.symbol ?? "").localeCompare(b.symbol ?? ""),
+      )
+      .slice(0, MAX_TOKENS_PER_CHAIN);
+    for (const token of chosen) {
+      mergeDefinition(definitions, {
+        symbol: token.symbol!,
+        name: token.name!,
+        decimals: token.decimals ?? 18,
+        addresses: { [chain]: token.address! },
+      }, chain);
+    }
+  }
+  return {
+    definitions,
+    source: "uniswap",
+    listUpdatedAt: list.timestamp ?? null,
+    candidateCounts,
+  };
+}
+
+function tokenPrice(pair: DexPair, address: string): number {
+  const target = address.toLowerCase();
+  const baseAddress = pair.baseToken?.address?.toLowerCase();
+  const quoteAddress = pair.quoteToken?.address?.toLowerCase();
+  const basePrice = Number(pair.priceUsd ?? 0);
+  if (baseAddress === target) return basePrice;
+  const nativeRatio = Number(pair.priceNative ?? 0);
+  return quoteAddress === target && basePrice > 0 && nativeRatio > 0 ? basePrice / nativeRatio : 0;
+}
+
+async function pairsForBatch(chain: ChainId, addresses: string[]): Promise<DexPair[]> {
+  const key = `pairs-batch:${chain}:${addresses.map((address) => address.toLowerCase()).sort().join(",")}`;
+  const raw = await cached(key, () =>
+    jsonFetch<unknown[]>(
+      `https://api.dexscreener.com/tokens/v1/${chain}/${addresses.join(",")}`,
+    ),
+  );
+  return Array.isArray(raw) ? raw as DexPair[] : [];
+}
+
+async function pairsForToken(chain: ChainId, address: string): Promise<DexPair[]> {
   const raw = await cached(`pairs:${chain}:${address.toLowerCase()}`, () =>
     jsonFetch<unknown[]>(`https://api.dexscreener.com/token-pairs/v1/${chain}/${address}`),
   );
-  return Array.isArray(raw) ? (raw as DexPair[]) : [];
+  return Array.isArray(raw) ? raw as DexPair[] : [];
 }
 
-async function liveMarkets(chain: ChainId) {
-  const definitions = TOKEN_DEFINITIONS
+async function liveMarkets(chain: ChainId, definitions: TokenDefinition[]): Promise<MarketScan> {
+  const entries = definitions
     .map((token) => ({ token, address: token.addresses[chain] }))
     .filter((item): item is { token: TokenDefinition; address: string } => Boolean(item.address));
+  const batches: string[][] = [];
+  for (let index = 0; index < entries.length; index += DEX_BATCH_SIZE) {
+    batches.push(entries.slice(index, index + DEX_BATCH_SIZE).map((entry) => entry.address));
+  }
   const results = await Promise.allSettled(
-    definitions.map(async ({ token, address }) => ({ token, pairs: await pairsFor(chain, address) })),
+    batches.map(async (addresses) => ({ addresses, pairs: await pairsForBatch(chain, addresses) })),
   );
-  return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  const pairsByAddress = new Map<string, DexPair[]>();
+  const pairKeysByAddress = new Map<string, Set<string>>();
+  let failedTokens = 0;
+  let failedBatches = 0;
+  results.forEach((result, resultIndex) => {
+    if (result.status === "rejected") {
+      failedBatches += 1;
+      failedTokens += batches[resultIndex]?.length ?? 0;
+      return;
+    }
+    for (const pair of result.value.pairs) {
+      if (!pair.pairAddress) continue;
+      const pairKey = pair.pairAddress.toLowerCase();
+      const matchedAddresses = [pair.baseToken?.address, pair.quoteToken?.address]
+        .filter((address): address is string => Boolean(address))
+        .map((address) => address.toLowerCase());
+      for (const address of matchedAddresses) {
+        if (!result.value.addresses.some((candidate) => candidate.toLowerCase() === address)) continue;
+        const pairs = pairsByAddress.get(address) ?? [];
+        const keys = pairKeysByAddress.get(address) ?? new Set<string>();
+        if (!keys.has(pairKey)) {
+          pairs.push(pair);
+          keys.add(pairKey);
+          pairsByAddress.set(address, pairs);
+          pairKeysByAddress.set(address, keys);
+        }
+      }
+    }
+  });
+
+  const detailedEntries = entries.slice(0, MAX_DETAILED_TOKENS_PER_CHAIN);
+  const detailedResults = await Promise.allSettled(
+    detailedEntries.map(async ({ address }) => ({ address, pairs: await pairsForToken(chain, address) })),
+  );
+  detailedResults.forEach((result, resultIndex) => {
+    const address = detailedEntries[resultIndex]?.address.toLowerCase();
+    if (!address) return;
+    if (result.status === "fulfilled") {
+      const deduped = new Map<string, DexPair>();
+      for (const pair of result.value.pairs) {
+        if (pair.pairAddress) deduped.set(pair.pairAddress.toLowerCase(), pair);
+      }
+      pairsByAddress.set(address, [...deduped.values()]);
+    } else if (!pairsByAddress.get(address)?.length) {
+      failedTokens += 1;
+    }
+  });
+
+  return {
+    markets: entries.map(({ token, address }) => ({ token, pairs: pairsByAddress.get(address.toLowerCase()) ?? [] })),
+    requestedTokens: entries.length,
+    failedTokens,
+    batches: batches.length,
+    failedBatches,
+  };
+}
+
+function uniquePairs(markets: Market[]): DexPair[] {
+  const byAddress = new Map<string, DexPair>();
+  for (const market of markets) {
+    for (const pair of market.pairs) {
+      if (pair.pairAddress) byAddress.set(pair.pairAddress.toLowerCase(), pair);
+    }
+  }
+  return [...byAddress.values()];
+}
+
+function dexFeeBps(dexId: string): number {
+  const id = dexId.toLowerCase();
+  if (id.includes("curve")) return 4;
+  if (id.includes("balancer")) return 25;
+  if (id.includes("camelot")) return 30;
+  if (id.includes("sushiswap") || id.includes("uniswap")) return 30;
+  if (id.includes("pancake")) return 25;
+  return 30;
 }
 
 function buildOpportunities(
   chain: ChainId,
-  markets: Awaited<ReturnType<typeof liveMarkets>>,
+  markets: Market[],
   blockNumber: number,
+  detectedAt: string,
 ): Opportunity[] {
   const output: Opportunity[] = [];
   for (const { token, pairs } of markets) {
@@ -206,7 +452,7 @@ function buildOpportunities(
     const priced = pairs
       .map((pair) => ({ pair, priceUsd: tokenPrice(pair, address) }))
       .filter(({ pair, priceUsd }) =>
-        priceUsd > 0 && Number(pair.liquidity?.usd ?? 0) > 10_000 && pair.dexId && pair.pairAddress,
+        priceUsd > 0 && Number(pair.liquidity?.usd ?? 0) > MIN_LIQUIDITY_USD && pair.dexId && pair.pairAddress,
       );
     const prices = priced.map(({ priceUsd }) => priceUsd).sort((a, b) => a - b);
     const median = prices.length ? prices[Math.floor(prices.length / 2)] : 0;
@@ -217,7 +463,7 @@ function buildOpportunities(
         chain: RPCS[chain].name,
         priceUsd,
         liquidityUsd: Number(pair.liquidity?.usd ?? 0),
-        feeBps: 30,
+        feeBps: dexFeeBps(pair.dexId!),
         pairAddress: pair.pairAddress!,
         dexUrl: pair.url ?? `${RPCS[chain].explorer}/address/${pair.pairAddress}`,
         volume24h: Number(pair.volume?.h24 ?? 0),
@@ -255,7 +501,7 @@ function buildOpportunities(
             recommendedBorrowUsd: Number(borrow.toFixed(2)),
             confidence: net > 0 && spreadBps > 15 ? "medium" : "low",
           },
-          detectedAt: new Date().toISOString(),
+          detectedAt,
           blockNumber,
           executable: net > 0 && spreadBps > 10,
           status: "new",
@@ -266,14 +512,50 @@ function buildOpportunities(
   return output.sort((a, b) => b.profit.netProfitUsd - a.profit.netProfitUsd);
 }
 
-async function scan(chain: "all" | ChainId) {
-  const chains: ChainId[] = chain === "all" ? ["ethereum", "arbitrum"] : [chain];
-  return Promise.all(chains.map(async (item) => {
-    const [status, markets] = await Promise.all([networkStatus(item), liveMarkets(item)]);
-    const opportunities = buildOpportunities(item, markets, status.blockNumber);
-    const pools = markets.reduce((sum, market) => sum + market.pairs.length, 0);
-    return { status: { ...status, pools }, markets, opportunities };
+async function createSnapshot(): Promise<ScanSnapshot> {
+  const started = Date.now();
+  const universe = await loadTokenUniverse();
+  const capturedAt = new Date().toISOString();
+  const chains = await Promise.all(CHAINS.map(async (chain): Promise<ChainScan> => {
+    const [status, marketScan] = await Promise.all([
+      networkStatus(chain),
+      liveMarkets(chain, universe.definitions),
+    ]);
+    const pairs = uniquePairs(marketScan.markets);
+    const liquidPairs = pairs.filter((pair) => Number(pair.liquidity?.usd ?? 0) > MIN_LIQUIDITY_USD);
+    const venues = new Set(pairs.map((pair) => pair.dexId).filter((dex): dex is string => Boolean(dex)));
+    return {
+      status: {
+        ...status,
+        pools: pairs.length,
+        tokensScanned: marketScan.requestedTokens,
+        failedTokens: marketScan.failedTokens,
+        liquidPools: liquidPairs.length,
+        venues: venues.size,
+      },
+      markets: marketScan.markets,
+      opportunities: buildOpportunities(chain, marketScan.markets, status.blockNumber, capturedAt),
+    };
   }));
+  return {
+    capturedAt,
+    latencyMs: Date.now() - started,
+    universe,
+    chains,
+  };
+}
+
+async function getSnapshot(): Promise<ScanSnapshot> {
+  if (snapshotCache && snapshotCache.expiresAt > Date.now()) return snapshotCache.value;
+  if (snapshotInFlight) return snapshotInFlight;
+  snapshotInFlight = createSnapshot();
+  try {
+    const snapshot = await snapshotInFlight;
+    snapshotCache = { expiresAt: Date.now() + SNAPSHOT_TTL_MS, value: snapshot };
+    return snapshot;
+  } finally {
+    snapshotInFlight = undefined;
+  }
 }
 
 function error(res: Response, message: string) {
@@ -284,14 +566,8 @@ const router: IRouter = Router();
 
 router.get("/scanner/networks", async (_req, res) => {
   try {
-    const networks = await Promise.all((Object.keys(RPCS) as ChainId[]).map(async (chain) => {
-      const [status, markets] = await Promise.all([networkStatus(chain), liveMarkets(chain)]);
-      return {
-        ...status,
-        pools: markets.reduce((sum, market) => sum + market.pairs.length, 0),
-      };
-    }));
-    res.json(GetScannerNetworksResponse.parse(networks));
+    const snapshot = await getSnapshot();
+    res.json(GetScannerNetworksResponse.parse(snapshot.chains.map((chain) => chain.status)));
   } catch (err) {
     logger.warn({ err }, "live network status unavailable");
     error(res, "Live network status is unavailable. No network data was fabricated.");
@@ -300,9 +576,7 @@ router.get("/scanner/networks", async (_req, res) => {
 
 router.get("/scanner/tokens", async (_req, res) => {
   try {
-    const markets = await Promise.all(
-      (Object.keys(RPCS) as ChainId[]).map(async (chain) => ({ chain, markets: await liveMarkets(chain) })),
-    );
+    const snapshot = await getSnapshot();
     const bySymbol = new Map<string, {
       symbol: string;
       name: string;
@@ -313,22 +587,24 @@ router.get("/scanner/tokens", async (_req, res) => {
       pools: number;
       priceUsd: number;
       change24h: number;
+      volume24h: number;
     }>();
-    markets.forEach(({ chain, markets: chainMarkets }) => chainMarkets.forEach(({ token, pairs }) => {
+    snapshot.chains.forEach(({ status: chainStatus, markets }) => markets.forEach(({ token, pairs }) => {
+      const chain = chainStatus.id as ChainId;
       const address = token.addresses[chain];
       if (!address) return;
       const usable = pairs
         .map((pair) => ({ pair, priceUsd: tokenPrice(pair, address) }))
         .filter(({ priceUsd }) => priceUsd > 0);
       const liquid = usable.reduce((sum, item) => sum + Number(item.pair.liquidity?.usd ?? 0), 0);
-      const top = usable.sort(
+      const top = [...usable].sort(
         (a, b) => Number(b.pair.liquidity?.usd ?? 0) - Number(a.pair.liquidity?.usd ?? 0),
       )[0];
       const existing = bySymbol.get(token.symbol);
       bySymbol.set(token.symbol, {
         symbol: token.symbol,
         name: token.name,
-        address,
+        address: existing?.address ?? address,
         decimals: token.decimals,
         chains: existing?.chains.includes(RPCS[chain].name)
           ? existing.chains
@@ -336,11 +612,14 @@ router.get("/scanner/tokens", async (_req, res) => {
         liquidityUsd: Number((existing?.liquidityUsd ?? 0) + liquid),
         pools: (existing?.pools ?? 0) + usable.length,
         priceUsd: Number(top?.priceUsd ?? existing?.priceUsd ?? 0),
-        change24h: Number(top?.pair.priceChange?.h24 ?? 0),
+        change24h: Number(top?.pair.priceChange?.h24 ?? existing?.change24h ?? 0),
+        volume24h: Number((existing?.volume24h ?? 0) + (top?.pair.volume?.h24 ?? 0)),
       });
     }));
     res.json(GetScannerTokensResponse.parse(
-      [...bySymbol.values()].filter((token) => token.pools > 0 && token.priceUsd > 0),
+      [...bySymbol.values()]
+        .filter((token) => token.pools > 0 && token.priceUsd > 0)
+        .sort((a, b) => b.liquidityUsd - a.liquidityUsd),
     ));
   } catch (err) {
     logger.warn({ err }, "live token universe unavailable");
@@ -355,9 +634,12 @@ router.get("/scanner/opportunities", async (req, res) => {
     return;
   }
   try {
-    const results = await scan(parsed.data.chain);
+    const snapshot = await getSnapshot();
     const token = parsed.data.token?.toLowerCase();
-    const opportunities = results
+    const chainResults = parsed.data.chain === "all"
+      ? snapshot.chains
+      : snapshot.chains.filter((item) => item.status.id === parsed.data.chain);
+    const opportunities = chainResults
       .flatMap((item) => item.opportunities)
       .filter((item) => item.spreadBps >= parsed.data.minProfitBps
         && (!token || item.token.toLowerCase() === token))
@@ -376,9 +658,8 @@ router.get("/scanner/opportunities/:id", async (req, res) => {
     return;
   }
   try {
-    const chain = parsed.data.id.startsWith("arbitrum-") ? "arbitrum" : "ethereum";
-    const results = await scan(chain);
-    const opportunity = results.flatMap((item) => item.opportunities)
+    const snapshot = await getSnapshot();
+    const opportunity = snapshot.chains.flatMap((item) => item.opportunities)
       .find((item) => item.id === parsed.data.id);
     if (!opportunity) {
       res.status(404).json({ error: "Live opportunity is no longer available" });
@@ -393,21 +674,37 @@ router.get("/scanner/opportunities/:id", async (req, res) => {
 
 router.get("/scanner/summary", async (_req, res) => {
   try {
-    const started = Date.now();
-    const results = await scan("all");
-    const opportunities = results.flatMap((item) => item.opportunities);
+    const snapshot = await getSnapshot();
+    const opportunities = snapshot.chains.flatMap((item) => item.opportunities);
+    const uniquePools = new Set(
+      snapshot.chains.flatMap((item) => uniquePairs(item.markets))
+        .map((pair) => pair.pairAddress?.toLowerCase())
+        .filter((address): address is string => Boolean(address)),
+    );
+    const venues = new Set(
+      snapshot.chains.flatMap((item) => uniquePairs(item.markets))
+        .map((pair) => pair.dexId)
+        .filter((dex): dex is string => Boolean(dex)),
+    );
     const summary = {
       activeOpportunities: opportunities.length,
-      poolsScanned: results.reduce((sum, item) => sum + item.status.pools, 0),
-      tokensTracked: new Set(results.flatMap((item) => item.markets.map((market) => market.token.symbol))).size,
+      poolsScanned: snapshot.chains.reduce((sum, item) => sum + item.status.pools, 0),
+      uniquePools: uniquePools.size,
+      liquidPools: snapshot.chains.reduce((sum, item) => sum + item.status.liquidPools, 0),
+      tokensTracked: snapshot.chains.reduce((sum, item) => sum + item.status.tokensScanned, 0),
+      tokensDiscovered: Object.values(snapshot.universe.candidateCounts).reduce((sum, count) => sum + count, 0),
+      failedTokens: snapshot.chains.reduce((sum, item) => sum + item.status.failedTokens, 0),
+      venuesTracked: venues.size,
+      tokenListSource: snapshot.universe.source,
+      tokenListUpdatedAt: snapshot.universe.listUpdatedAt,
       estimatedNetProfit24h: Number(
         opportunities
           .filter((item) => item.profit.netProfitUsd > 0)
           .reduce((sum, item) => sum + item.profit.netProfitUsd, 0)
           .toFixed(2),
       ),
-      lastScanAt: new Date().toISOString(),
-      scanLatencyMs: Date.now() - started,
+      lastScanAt: snapshot.capturedAt,
+      scanLatencyMs: snapshot.latencyMs,
     };
     res.json(GetScannerSummaryResponse.parse(summary));
   } catch (err) {

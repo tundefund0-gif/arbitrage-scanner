@@ -157,7 +157,23 @@ components:
           type: string
         scanLatencyMs:
           type: number
-      required: [activeOpportunities, poolsScanned, tokensTracked, estimatedNetProfit24h, lastScanAt, scanLatencyMs]
+        uniquePools:
+          type: number
+        liquidPools:
+          type: number
+        tokensDiscovered:
+          type: number
+        failedTokens:
+          type: number
+        venuesTracked:
+          type: number
+        tokenListSource:
+          type: string
+          enum: [uniswap, curated]
+        tokenListUpdatedAt:
+          type: string
+          nullable: true
+      required: [activeOpportunities, poolsScanned, uniquePools, liquidPools, tokensTracked, tokensDiscovered, failedTokens, venuesTracked, tokenListSource, tokenListUpdatedAt, estimatedNetProfit24h, lastScanAt, scanLatencyMs]
     NetworkStatus:
       type: object
       properties:
@@ -178,9 +194,17 @@ components:
           type: number
         pools:
           type: number
+        tokensScanned:
+          type: number
+        failedTokens:
+          type: number
+        liquidPools:
+          type: number
+        venues:
+          type: number
         lastBlockAt:
           type: string
-      required: [id, name, chainId, status, blockNumber, gasGwei, blockTimeMs, pools, lastBlockAt]
+      required: [id, name, chainId, status, blockNumber, gasGwei, blockTimeMs, pools, tokensScanned, failedTokens, liquidPools, venues, lastBlockAt]
     ScannerToken:
       type: object
       properties:
@@ -204,7 +228,9 @@ components:
           type: number
         change24h:
           type: number
-      required: [symbol, name, address, decimals, chains, liquidityUsd, pools, priceUsd, change24h]
+        volume24h:
+          type: number
+      required: [symbol, name, address, decimals, chains, liquidityUsd, pools, priceUsd, change24h, volume24h]
     DEXVenue:
       type: object
       properties:

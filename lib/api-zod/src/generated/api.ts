@@ -26,7 +26,14 @@ export const GetScannerSummaryResponse = zod.object({
   "tokensTracked": zod.number(),
   "estimatedNetProfit24h": zod.number(),
   "lastScanAt": zod.string(),
-  "scanLatencyMs": zod.number()
+  "scanLatencyMs": zod.number(),
+  "uniquePools": zod.number(),
+  "liquidPools": zod.number(),
+  "tokensDiscovered": zod.number(),
+  "failedTokens": zod.number(),
+  "venuesTracked": zod.number(),
+  "tokenListSource": zod.enum(['uniswap', 'curated']),
+  "tokenListUpdatedAt": zod.string().nullable()
 })
 
 
@@ -42,6 +49,10 @@ export const GetScannerNetworksResponseItem = zod.object({
   "gasGwei": zod.number(),
   "blockTimeMs": zod.number(),
   "pools": zod.number(),
+  "tokensScanned": zod.number(),
+  "failedTokens": zod.number(),
+  "liquidPools": zod.number(),
+  "venues": zod.number(),
   "lastBlockAt": zod.string()
 })
 export const GetScannerNetworksResponse = zod.array(GetScannerNetworksResponseItem)
@@ -59,7 +70,8 @@ export const GetScannerTokensResponseItem = zod.object({
   "liquidityUsd": zod.number(),
   "pools": zod.number(),
   "priceUsd": zod.number(),
-  "change24h": zod.number()
+  "change24h": zod.number(),
+  "volume24h": zod.number()
 })
 export const GetScannerTokensResponse = zod.array(GetScannerTokensResponseItem)
 

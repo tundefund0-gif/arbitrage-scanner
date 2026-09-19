@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ScannerSummaryTokenListSource } from './scannerSummaryTokenListSource';
 
 export interface ScannerSummary {
   activeOpportunities: number;
@@ -13,4 +14,11 @@ export interface ScannerSummary {
   estimatedNetProfit24h: number;
   lastScanAt: string;
   scanLatencyMs: number;
+  uniquePools: number;
+  liquidPools: number;
+  tokensDiscovered: number;
+  failedTokens: number;
+  venuesTracked: number;
+  tokenListSource: ScannerSummaryTokenListSource;
+  tokenListUpdatedAt: string | null;
 }

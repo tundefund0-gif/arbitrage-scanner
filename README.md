@@ -8,11 +8,13 @@ The repository contains the React/Vite scanner cockpit, a shared Express API ser
 
 ## What it does
 
-- Scans supported Ethereum and Arbitrum token markets using live RPC and market-data sources.
+- Scans a controlled, verified Ethereum and Arbitrum token universe using live RPC and market-data sources.
+- Discovers 609 listed candidates from the Uniswap token list, selects up to 150 per chain, and keeps the curated blue-chip set as a transparent fallback.
+- Uses DexScreener batch discovery plus full pair-list reads for the highest-priority 60 tokens per chain, with one shared 25-second snapshot across all dashboard endpoints.
 - Ranks price dislocations by estimated net profit.
 - Shows buy and sell venues, spread, liquidity, fees, slippage, gas, flash-loan costs, and confidence.
-- Provides live network telemetry including block height, gas price, block time, and scanned pool count.
-- Displays tracked token coverage, liquidity, prices, pool counts, supported chains, and 24-hour change.
+- Provides live network telemetry including block height, gas price, block time, scanned token count, liquid pool count, venue count, and unique pool count.
+- Displays tracked token coverage, verified candidate breadth, liquidity, prices, pool counts, venue volume, supported chains, and 24-hour change.
 - Supports chain and spread filters, refresh, route detail inspection, venue links, and mobile navigation.
 - Exposes explicit loading, empty, retry, and upstream-unavailable states instead of silently fabricating market data.
 
@@ -107,8 +109,8 @@ All endpoints are mounted below `/api`.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/healthz` | API health check |
-| `GET /api/scanner/summary` | Active opportunity, pool, token, profit, and latency summary |
-| `GET /api/scanner/networks` | Ethereum and Arbitrum network telemetry |
+| `GET /api/scanner/summary` | Active opportunity, pool, token, venue, discovery, profit, and latency summary |
+| `GET /api/scanner/networks` | Ethereum and Arbitrum network telemetry plus scan coverage |
 | `GET /api/scanner/tokens` | Live tracked token universe |
 | `GET /api/scanner/opportunities` | Ranked opportunities with optional filters |
 | `GET /api/scanner/opportunities/:id` | Live detail for one opportunity |
@@ -122,12 +124,13 @@ Opportunity query parameters:
 
 ## Live data behavior
 
-The scanner uses short-lived in-memory caching to avoid repeatedly requesting the same upstream market data during a scan cycle. It does not persist market snapshots or invent fallback opportunities.
+The scanner uses a shared short-lived in-memory snapshot so summary, network, token, opportunity, and detail requests reuse one coherent market pass. DexScreener batch reads discover the wider token surface, while detailed pair-list reads cover the highest-priority tokens on each chain. It does not persist market snapshots or invent fallback opportunities.
 
 Upstream data sources currently include:
 
 - Public Ethereum and Arbitrum JSON-RPC endpoints for block and gas telemetry.
-- DexScreener token-pair data for live liquidity, prices, venues, volume, and price change.
+- Uniswap's public token list for verified token metadata and candidate discovery.
+- DexScreener batch and token-pair data for live liquidity, prices, venues, volume, and price change.
 
 If an upstream source is unavailable, the API returns a service-unavailable response and the frontend renders an explicit unavailable state.
 

@@ -4,6 +4,7 @@ import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import {
   Activity,
   ArrowDownRight,
+  BarChart3,
   ChevronRight,
   CircleHelp,
   Clock3,
@@ -41,11 +42,20 @@ import type {
   ArbitrageOpportunity,
   GetScannerOpportunitiesChain,
   NetworkStatus,
+  ScannerSummary,
   ScannerToken,
 } from '@workspace/api-client-react';
 import NotFound from '@/pages/not-found';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 20_000,
+      refetchInterval: 25_000,
+      refetchOnWindowFocus: true,
+    },
+  },
+});
 
 const money = (value = 0, compact = false) =>
   new Intl.NumberFormat('en-US', {
@@ -156,7 +166,7 @@ function Sidebar({ mobileOpen, close }: { mobileOpen: boolean; close: () => void
           <div className="system-card">
             <div className="system-title"><span className="live-dot" /> Scanner engine</div>
             <div className="system-value">Operational</div>
-            <div className="system-meta">polling every 2.5s</div>
+           <div className="system-meta">polling every 25s</div>
           </div>
           <div className="sidebar-foot"><span>v0.9.4</span><CircleHelp size={15} /></div>
         </div>
@@ -181,11 +191,13 @@ function Topbar({ onMenu, onRefresh, refreshing }: { onMenu: () => void; onRefre
   );
 }
 
-function Summary({ loading, data }: { loading: boolean; data?: { activeOpportunities: number; poolsScanned: number; tokensTracked: number; estimatedNetProfit24h: number; lastScanAt: string; scanLatencyMs: number } }) {
+function Summary({ loading, data }: { loading: boolean; data?: ScannerSummary }) {
   const items = [
     { label: 'Active opportunities', value: data ? number(data.activeOpportunities) : '', accent: 'amber', icon: Zap, sub: 'executable now' },
     { label: 'Est. net profit · 24h', value: data ? money(data.estimatedNetProfit24h, true) : '', accent: 'mint', icon: WalletCards, sub: 'after fees + gas' },
-    { label: 'Pools scanned', value: data ? number(data.poolsScanned) : '', accent: 'blue', icon: Layers3, sub: 'across all networks' },
+    { label: 'Unique pools', value: data ? number(data.uniquePools) : '', accent: 'blue', icon: Layers3, sub: `${data ? number(data.liquidPools) : '—'} liquid above $10k` },
+    { label: 'Tracked assets', value: data ? number(data.tokensTracked) : '', accent: 'violet', icon: BarChart3, sub: data ? `${number(data.tokensDiscovered)} verified candidates` : 'awaiting discovery' },
+    { label: 'DEX venues', value: data ? number(data.venuesTracked) : '', accent: 'mint', icon: Signal, sub: data ? `${number(data.failedTokens)} token misses` : 'awaiting scan' },
     { label: 'Scan latency', value: data ? `${data.scanLatencyMs}ms` : '', accent: 'violet', icon: Gauge, sub: data ? `last scan ${ago(data.lastScanAt)}` : 'awaiting scan' },
   ];
   return (
@@ -211,8 +223,8 @@ function NetworkStrip({ data, loading, error, retry }: { data?: NetworkStatus[];
           {data?.map((network) => (
             <div className="network-card" key={network.id} data-testid={`card-network-${network.id}`}>
               <div className="network-head"><div className="chain-icon">{network.name.slice(0, 1)}</div><div><b>{network.name}</b><small>Chain {network.chainId}</small></div><span className={`status-pill ${network.status}`}><i />{network.status}</span></div>
-              <div className="network-readings"><div><small>Block</small><b>{number(network.blockNumber)}</b></div><div><small>Gas</small><b>{network.gasGwei.toFixed(1)} <em>gwei</em></b></div><div><small>Pools</small><b>{number(network.pools)}</b></div></div>
-              <div className="network-foot"><span>{network.blockTimeMs}ms block time</span><span>{ago(network.lastBlockAt)}</span></div>
+              <div className="network-readings"><div><small>Block</small><b>{number(network.blockNumber)}</b></div><div><small>Gas</small><b>{network.gasGwei.toFixed(1)} <em>gwei</em></b></div><div><small>Tokens</small><b>{number(network.tokensScanned)}</b></div><div><small>Pools</small><b>{number(network.pools)}</b></div></div>
+              <div className="network-foot"><span>{number(network.liquidPools)} liquid · {number(network.venues)} DEXs</span><span>{network.blockTimeMs}ms · {ago(network.lastBlockAt)}</span></div>
             </div>
           ))}
         </div>
@@ -269,17 +281,25 @@ function Opportunities({
   );
 }
 
-function TokenUniverse({ data, loading, error, retry }: { data?: ScannerToken[]; loading: boolean; error: boolean; retry: () => void }) {
+function TokenUniverse({ data, loading, error, retry, coverage }: { data?: ScannerToken[]; loading: boolean; error: boolean; retry: () => void; coverage?: ScannerSummary }) {
   return (
     <section id="tokens" className="section-block">
-      <div className="section-heading"><div><div className="eyebrow">Coverage</div><h2>Token universe</h2></div><span className="section-note">{data?.length ?? 0} tracked assets</span></div>
+      <div className="section-heading"><div><div className="eyebrow">Coverage</div><h2>Token universe</h2></div><span className="section-note"><span className="live-dot" />{data?.length ?? 0} active assets · {coverage?.tokenListSource === 'uniswap' ? 'Uniswap verified list' : 'curated metadata'}</span></div>
+      {coverage && (
+        <div className="coverage-bar">
+          <div><span>Discovery breadth</span><strong>{number(coverage.tokensDiscovered)} candidates</strong></div>
+          <div><span>Active scan</span><strong>{number(coverage.tokensTracked)} tokens</strong></div>
+          <div><span>Pool surface</span><strong>{number(coverage.poolsScanned)} pools</strong></div>
+          <div><span>Snapshot</span><strong>{ago(coverage.lastScanAt)}</strong></div>
+        </div>
+      )}
       <DataState loading={loading} error={error} empty={!data?.length} onRetry={retry} label="tokens">
         <div className="token-grid">
           {data?.slice(0, 8).map((token) => (
             <div className="token-card" key={token.address} data-testid={`card-token-${token.symbol}`}>
               <div className="token-head"><div className="token-glyph large">{token.symbol.slice(0, 2)}</div><div><strong>{token.symbol}</strong><small>{token.name}</small></div><span className={token.change24h >= 0 ? 'positive' : 'negative'}>{token.change24h >= 0 ? '+' : ''}{token.change24h.toFixed(2)}%</span></div>
               <div className="token-price">{money(token.priceUsd, false)}</div>
-              <div className="token-meta"><span>{money(token.liquidityUsd, true)} liq.</span><span>{token.pools} pools</span><span>{token.chains.length} chains</span></div>
+              <div className="token-meta"><span>{money(token.liquidityUsd, true)} liq.</span><span>{token.pools} pools</span><span>{money(token.volume24h, true)} vol.</span></div>
             </div>
           ))}
         </div>
@@ -326,7 +346,7 @@ function Cockpit() {
     client.invalidateQueries({ queryKey: getGetScannerSummaryQueryKey() });
     client.invalidateQueries({ queryKey: getGetScannerNetworksQueryKey() });
     client.invalidateQueries({ queryKey: getGetScannerTokensQueryKey() });
-     client.invalidateQueries({ queryKey: getGetScannerOpportunitiesQueryKey() });
+    client.invalidateQueries({ queryKey: getGetScannerOpportunitiesQueryKey() });
     client.invalidateQueries({ queryKey: getHealthCheckQueryKey() });
   };
   return (
@@ -339,7 +359,7 @@ function Cockpit() {
           <Summary loading={summary.isLoading} data={summary.data} />
           <NetworkStrip data={networks.data} loading={networks.isLoading} error={networks.isError} retry={() => networks.refetch()} />
           <Opportunities data={opportunities.data} loading={opportunities.isLoading} error={opportunities.isError} retry={() => opportunities.refetch()} onSelect={setSelected} chain={chain} onChainChange={setChain} />
-          <TokenUniverse data={tokens.data} loading={tokens.isLoading} error={tokens.isError} retry={() => tokens.refetch()} />
+          <TokenUniverse data={tokens.data} loading={tokens.isLoading} error={tokens.isError} retry={() => tokens.refetch()} coverage={summary.data} />
           <footer className="page-footer"><span>Arbitrage Scanner <b>·</b> Real-time market intelligence</span><span>Data refreshes automatically <span className="live-dot" /></span></footer>
         </div>
       </main>

@@ -13,6 +13,14 @@ export interface ErrorResponse {
   error: string;
 }
 
+export type ScannerSummaryTokenListSource = typeof ScannerSummaryTokenListSource[keyof typeof ScannerSummaryTokenListSource];
+
+
+export const ScannerSummaryTokenListSource = {
+  uniswap: 'uniswap',
+  curated: 'curated',
+} as const;
+
 export interface ScannerSummary {
   activeOpportunities: number;
   poolsScanned: number;
@@ -20,6 +28,13 @@ export interface ScannerSummary {
   estimatedNetProfit24h: number;
   lastScanAt: string;
   scanLatencyMs: number;
+  uniquePools: number;
+  liquidPools: number;
+  tokensDiscovered: number;
+  failedTokens: number;
+  venuesTracked: number;
+  tokenListSource: ScannerSummaryTokenListSource;
+  tokenListUpdatedAt: string | null;
 }
 
 export type NetworkStatusStatus = typeof NetworkStatusStatus[keyof typeof NetworkStatusStatus];
@@ -40,6 +55,10 @@ export interface NetworkStatus {
   gasGwei: number;
   blockTimeMs: number;
   pools: number;
+  tokensScanned: number;
+  failedTokens: number;
+  liquidPools: number;
+  venues: number;
   lastBlockAt: string;
 }
 
@@ -53,6 +72,7 @@ export interface ScannerToken {
   pools: number;
   priceUsd: number;
   change24h: number;
+  volume24h: number;
 }
 
 export interface DEXVenue {

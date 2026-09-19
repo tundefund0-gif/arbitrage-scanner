@@ -16,5 +16,9 @@ export interface NetworkStatus {
   gasGwei: number;
   blockTimeMs: number;
   pools: number;
+  tokensScanned: number;
+  failedTokens: number;
+  liquidPools: number;
+  venues: number;
   lastBlockAt: string;
 }
